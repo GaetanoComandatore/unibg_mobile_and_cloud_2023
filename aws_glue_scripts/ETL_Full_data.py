@@ -1,3 +1,6 @@
+# codice per funzione Glue scritto in python
+# codice nel JOB ETL_Full_Data
+
 ###### TEDx-Load-Aggregate-Model ######
 
 import sys
@@ -71,22 +74,32 @@ def writeMongo(setName,collectionName):
         .from_options(setName_frame, connection_type="mongodb", connection_options=write_mongo_options)
 ##############################################
 
-tags_linkedin = readMongo("tags_linkedin","_id")
-tags_xRef =readMongo("tags_xRef","_id")
-tags_tedx = readMongo("tags_dataset","_id")
-full_data = readMongo("full_data","_id")
+tedx = readMongo("tedx_dataset","idx").drop("_id") #_id non serve
+tags = readMongo("tags_dataset","idx").drop("_id") #_id non serve
+watchNext = readMongo("watch_next_dataset","idx").drop("_id") #_id non serve
+#tedx = readS3("tedx_dataset.csv","idx") #_id non c'è
+#tags = readS3("tags_dataset.csv","idx") #_id non c'è
+#watchNext = readS3("watch_next_dataset.csv","idx")  #_id non c'è
 
-##### linkedin.tag --> TEDx.tag (con la tabella di xReference)
-tags_list = tags_xRef.join(tags_linkedin, tags_xRef.Linkedin == tags_linkedin.tag, "inner")\
-    .select(col("TEDx"))\
-    .distinct()
-    
-##### TEDx.tag --> TEDx.id (con la tabella tag_dataset)
-eligible_list = tags_tedx.join(tags_list, tags_tedx.tag == tags_list.TEDx, "inner")\
-    .select(col("idx").alias("_id"))\
-    .distinct()
+### CREATE THE AGGREGATE MODEL tags_agg
+tags_agg = tags.groupBy(col("idx").alias("idx_ref")).agg(collect_set("tag").alias("tags"))
 
-##### TEDx.id --> full data
-eligible = eligible_list.join(full_data, full_data._id == eligible_list._id, "inner")
+### tedx_agg = tags_agg + tedx
+tedx_agg = tedx.join(tags_agg, tedx.idx == tags_agg.idx_ref, "left") \
+    .drop("idx_ref") \
+    .select(col("idx").alias("_id"), col("*")) \
+    .drop("idx") \
 
-writeMongo(eligible,"eligible")
+### CREATE THE STRUCTURED MODEL watchNext_str
+watchNext_str = watchNext.withColumn("next",struct(col("watch_next_idx").alias("id"),col("url").alias("url")))
+
+### CREATE THE AGGREGATE MODEL watchNext_agg
+watchNext_agg = watchNext_str.groupBy(col("idx").alias("idx_ref")).agg(collect_set("next").alias("next"))
+
+### full_agg = tedx_agg + watchNext_agg
+full_agg = tedx_agg.join(watchNext_agg, tedx_agg._id == watchNext_agg.idx_ref, "left") \
+    .select(col("*")) \
+    .drop("idx_ref")
+
+writeMongo(full_agg,"full_data")
+#writeS3(full_agg,"full_data.json")
